@@ -12,7 +12,33 @@ This is a C/WASM port of my original Python implementation available at [marcior
 - **Direct Gibbs Minimization:** Avoids the need to specify independent reaction sets.
 - **NASA-9 Thermodynamics:** Accurate specific heat, enthalpy, and entropy calculations across wide temperature ranges.
 - **Warm-Start Capable:** State is preserved between runs, allowing temperature or composition sweeps to converge in just 1–2 iterations.
-- **Gas-Phase Combustion:** Currently, the solver only supports ideal gas phase calculations. It is tailored specifically for combustion applications, relying on NASA's 9-coefficient thermodynamic datasets.
+- **Gas-Phase Combustion:** Currently, the solver only supports ideal gas phase calculations. It is tailored specifically for combustion applications, relying on NASA's 9-coefficient thermodynamic datasets. By the way, if you'd like to take a look at the complete NASA-9 Thermodynamics database, be sure to refer to NASA's amazing [CEA](https://github.com/nasa/CEA) repository.
+
+## Build Instructions
+
+Because this project relies on `tinyla` as a submodule, make sure to initialize it when cloning:
+
+```bash
+# Clone the repo with submodules
+git clone --recursive [https://github.com/marciorvneto/tiny-gibbs.git](https://github.com/marciorvneto/tiny-gibbs.git)
+cd tiny-gibbs
+
+# Or, if you already cloned it without submodules, run:
+# git submodule update --init
+
+```
+
+To compile the project, simply run `make`. The `Makefile` relies on standard `gcc`/`clang` for the native build and `emcc` (Emscripten) for the WebAssembly build.
+
+```bash
+make
+
+```
+
+This will generate:
+
+- `out/main`: The native C executable for local debugging.
+- `docs/main.js` & `docs/main.wasm`: The compiled WebAssembly bundle (with the NASA database embedded) ready to be served alongside your HTML.
 
 ## Mathematical Formulation
 
