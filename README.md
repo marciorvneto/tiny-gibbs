@@ -22,7 +22,7 @@ Because this project relies on `tinyla` as a submodule, make sure to initialize 
 
 ```bash
 # Clone the repo with submodules
-git clone --recursive [https://github.com/marciorvneto/tiny-gibbs.git](https://github.com/marciorvneto/tiny-gibbs.git)
+git clone --recursive https://github.com/marciorvneto/tiny-gibbs.git
 cd tiny-gibbs
 
 # Or, if you already cloned it without submodules, run:
