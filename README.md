@@ -1,5 +1,7 @@
 # tiny-gibbs
 
+![Tiny Gibbs](./tinygibbs.gif)
+
 A lightweight, high-performance chemical equilibrium solver written in C and compiled to WebAssembly.
 
 This project computes the equilibrium composition of ideal gas mixtures using direct Gibbs free energy minimization (the RAND method). It utilizes a damped Newton-Raphson approach to solve the Karush-Kuhn-Tucker (KKT) conditions and relies on NASA-9 polynomials for highly accurate thermodynamic properties.
