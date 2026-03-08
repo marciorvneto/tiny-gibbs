@@ -1,0 +1,819 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tiny Gibbs | Combustion Equilibrium Solver</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #f3f4f6;
+        --surface: #ffffff;
+        --surface2: #f9fafb;
+        --border: #e5e7eb;
+        --text: #111827;
+        --text-dim: #6b7280;
+        --accent: #2563eb;
+        --accent-hover: #1d4ed8;
+        --status-ok: #059669;
+        --status-err: #dc2626;
+        --status-warn: #d97706;
+        --mono:
+          "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+          Consolas, monospace;
+        --sans:
+          "DM Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          Roboto, sans-serif;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+        height: 100vh;
+        overflow: hidden;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      header {
+        padding: 1rem 1.5rem;
+        background: var(--surface);
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: baseline;
+        gap: 1rem;
+      }
+
+      header h1 {
+        font-family: var(--mono);
+        font-size: 1rem;
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      header span {
+        font-size: 0.75rem;
+        color: var(--text-dim);
+        font-weight: 500;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 300px 1fr;
+        height: calc(100vh - 60px);
+      }
+
+      .controls {
+        background: var(--surface);
+        padding: 1.25rem;
+        border-right: 1px solid var(--border);
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        height: 100%;
+        overflow-y: auto;
+      }
+      .control-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+
+      .control-group label {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      select,
+      input[type="number"] {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 0.4rem 0.5rem;
+        border-radius: 4px;
+        font-family: var(--mono);
+        font-size: 0.8rem;
+        outline: none;
+        transition:
+          border-color 0.1s,
+          box-shadow 0.1s;
+      }
+
+      select:focus,
+      input[type="number"]:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 1px var(--accent);
+      }
+
+      input[type="range"] {
+        -webkit-appearance: none;
+        width: 100%;
+        height: 4px;
+        background: var(--border);
+        border-radius: 2px;
+        outline: none;
+      }
+
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--accent);
+        cursor: pointer;
+        border: 2px solid var(--surface);
+        box-shadow: 0 0 0 1px var(--border);
+        transition: transform 0.1s;
+      }
+
+      input[type="range"]::-webkit-slider-thumb:hover {
+        transform: scale(1.1);
+      }
+
+      .slider-row {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .slider-val {
+        font-family: var(--mono);
+        font-size: 0.8rem;
+        color: var(--text);
+        min-width: 65px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .divider {
+        height: 1px;
+        background: var(--border);
+        margin: 0.5rem 0;
+      }
+
+      .status {
+        font-size: 0.75rem;
+        padding: 0.5rem;
+        border-radius: 4px;
+        background: var(--surface2);
+        border-left: 3px solid var(--border);
+        font-weight: 500;
+      }
+
+      .status.ok {
+        border-left-color: var(--status-ok);
+      }
+      .status.err {
+        border-left-color: var(--status-err);
+      }
+      .status.loading {
+        border-left-color: var(--status-warn);
+      }
+
+      .main-panel {
+        padding: 1.5rem 2.5rem 3rem;
+        display: flex;
+        flex-direction: column;
+        gap: 2rem;
+        height: 100%;
+        overflow-y: auto;
+      }
+      .chart-title {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: var(--text);
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 0.4rem;
+        margin-bottom: 1rem;
+      }
+
+      .bar-chart {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-width: 600px;
+      }
+
+      .bar-row {
+        display: grid;
+        grid-template-columns: 48px 1fr 70px;
+        align-items: center;
+        gap: 1rem;
+      }
+
+      .bar-label {
+        font-size: 0.8rem;
+        color: var(--text-dim);
+        text-align: right;
+        font-weight: 500;
+      }
+
+      .bar-track {
+        height: 16px;
+        background: var(--border);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+
+      .bar-fill {
+        height: 100%;
+        border-radius: 2px;
+        transition: width 0.15s ease-out;
+      }
+
+      .bar-value {
+        font-family: var(--mono);
+        font-size: 0.75rem;
+        color: var(--text);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .results-table {
+        font-size: 0.8rem;
+        border-collapse: collapse;
+        width: 100%;
+        max-width: 650px;
+        background: var(--surface);
+        border: 1px solid #d1d5db;
+        border-radius: 4px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+      }
+
+      .results-table th {
+        text-align: right;
+        padding: 0.6rem 0.75rem;
+        color: #374151;
+        font-weight: 600;
+        border-bottom: 2px solid #d1d5db;
+        background: #f3f4f6;
+      }
+
+      .results-table th:first-child {
+        text-align: left;
+      }
+
+      .results-table td {
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid var(--border);
+        text-align: right;
+        font-family: var(--mono);
+        font-variant-numeric: tabular-nums;
+        color: var(--text);
+      }
+
+      .results-table tbody tr:nth-child(even) {
+        background: #f9fafb;
+      }
+
+      .results-table tbody tr:hover {
+        background: #f3f4f6;
+      }
+
+      .results-table td:first-child {
+        text-align: left;
+        font-family: var(--sans);
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      .about {
+        margin-top: auto;
+        padding-top: 1rem;
+        font-size: 0.7rem;
+        color: var(--text-dim);
+      }
+
+      .about a {
+        color: var(--text);
+        text-decoration: underline;
+        text-decoration-color: var(--border);
+        text-underline-offset: 2px;
+      }
+
+      .about a:hover {
+        text-decoration-color: var(--accent);
+      }
+
+      .custom-feed {
+        display: none;
+        flex-direction: column;
+        gap: 0.4rem;
+      }
+      .custom-feed.visible {
+        display: flex;
+      }
+
+      .feed-row {
+        display: grid;
+        grid-template-columns: 40px 1fr;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      .feed-row label {
+        font-size: 0.75rem;
+        color: var(--text-dim);
+        text-align: right;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="grain"></div>
+
+    <header>
+      <h1>tiny-gibbs</h1>
+      <span
+        >Gibbs minimization &middot; NASA-9 polynomials &middot; C/WASM</span
+      >
+    </header>
+
+    <div class="layout">
+      <div class="controls">
+        <div class="control-group">
+          <label>Fuel / Oxidizer Preset</label>
+          <select id="preset">
+            <option value="ch4_air">CH₄ / Air</option>
+            <option value="h2_air">H₂ / Air</option>
+            <option value="c3h8_air">C₃H₈ / Air</option>
+            <option value="h2_o2">H₂ / O₂ (rocket)</option>
+            <option value="ch4_o2">CH₄ / O₂ (rocket)</option>
+            <option value="custom">Custom feed...</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label>Temperature (K)</label>
+          <div class="slider-row">
+            <input
+              type="range"
+              id="temp"
+              min="500"
+              max="5000"
+              step="10"
+              value="2000"
+            />
+            <span class="slider-val" id="temp-val">2000 K</span>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>Equivalence Ratio (φ)</label>
+          <div class="slider-row">
+            <input
+              type="range"
+              id="phi"
+              min="0.3"
+              max="3.0"
+              step="0.01"
+              value="1.0"
+            />
+            <span class="slider-val" id="phi-val">φ = 1.00</span>
+          </div>
+        </div>
+
+        <div class="custom-feed" id="custom-feed">
+          <div class="divider"></div>
+          <div class="control-group">
+            <label>Custom Feed (moles)</label>
+          </div>
+          <div class="feed-row">
+            <label>CH₄</label
+            ><input type="number" data-sp="CH4" value="0" min="0" step="0.1" />
+          </div>
+          <div class="feed-row">
+            <label>C₃H₈</label
+            ><input type="number" data-sp="C3H8" value="0" min="0" step="0.1" />
+          </div>
+          <div class="feed-row">
+            <label>H₂</label
+            ><input type="number" data-sp="H2" value="0" min="0" step="0.1" />
+          </div>
+          <div class="feed-row">
+            <label>O₂</label
+            ><input type="number" data-sp="O2" value="0" min="0" step="0.1" />
+          </div>
+          <div class="feed-row">
+            <label>N₂</label
+            ><input type="number" data-sp="N2" value="0" min="0" step="0.1" />
+          </div>
+          <div class="feed-row">
+            <label>Ar</label
+            ><input type="number" data-sp="Ar" value="0" min="0" step="0.01" />
+          </div>
+        </div>
+
+        <div class="divider"></div>
+        <div class="status loading" id="status">Loading WASM...</div>
+
+        <div class="about">
+          Chemical equilibrium via direct Gibbs free energy minimization. Damped
+          Newton-Raphson on KKT conditions (RAND method). Thermodynamic data:
+          <a href="https://ntrs.nasa.gov/citations/20020085330"
+            >NASA TP-2002-211556</a
+          >. <br /><br />
+          Built by
+          <a href="mailto:marcio@voimatoolbox.com">Márcio Neto</a> &middot;
+          <a href="https://voimatoolbox.com">Voima Toolbox</a>
+        </div>
+      </div>
+
+      <div class="main-panel">
+        <div class="chart-title">Equilibrium Mole Fractions</div>
+        <div class="bar-chart" id="chart"></div>
+
+        <div class="chart-title" style="margin-top: 1rem">Full Results</div>
+        <table class="results-table" id="results">
+          <thead>
+            <tr>
+              <th>Species</th>
+              <th>Moles</th>
+              <th>Mole Frac.</th>
+              <th>Mass Frac.</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <script>
+      const SPECIES = [
+        "H2",
+        "O2",
+        "N2",
+        "H2O",
+        "CO2",
+        "CO",
+        "OH",
+        "H",
+        "O",
+        "N",
+        "NO",
+        "NO2",
+        "HO2",
+        "H2O2",
+        "CH4",
+        "Ar",
+        "C3H8",
+        "NH3",
+      ];
+      const N = SPECIES.length;
+      const C_ELEM = 5;
+      const MOL_WEIGHTS = [
+        2.01588, 31.9988, 28.0134, 18.01528, 44.0095, 28.0101, 17.00734,
+        1.00794, 15.9994, 14.0067, 30.0061, 46.0055, 33.00674, 34.01468,
+        16.04246, 39.948, 44.09562, 17.03052,
+      ];
+
+      const COLORS = [
+        "#3b82f6",
+        "#ef4444",
+        "#64748b",
+        "#06b6d4",
+        "#f97316",
+        "#8b5cf6",
+        "#22c55e",
+        "#ec4899",
+        "#eab308",
+        "#14b8a6",
+        "#f43f5e",
+        "#a855f7",
+        "#84cc16",
+        "#6366f1",
+        "#f59e0b",
+        "#78716c",
+        "#0ea5e9",
+        "#d946ef",
+      ];
+
+      const DISPLAY = {
+        H2: "H₂",
+        O2: "O₂",
+        N2: "N₂",
+        H2O: "H₂O",
+        CO2: "CO₂",
+        CO: "CO",
+        OH: "OH",
+        H: "H",
+        O: "O",
+        N: "N",
+        NO: "NO",
+        NO2: "NO₂",
+        HO2: "HO₂",
+        H2O2: "H₂O₂",
+        CH4: "CH₄",
+        Ar: "Ar",
+        C3H8: "C₃H₈",
+        NH3: "NH₃",
+      };
+
+      // Species indices
+      const IDX = {};
+      SPECIES.forEach((s, i) => (IDX[s] = i));
+
+      // Element matrix (N x 5): C H O N Ar
+      const ATOM_MATRIX = [
+        [0, 2, 0, 0, 0], // H2
+        [0, 0, 2, 0, 0], // O2
+        [0, 0, 0, 2, 0], // N2
+        [0, 2, 1, 0, 0], // H2O
+        [1, 0, 2, 0, 0], // CO2
+        [1, 0, 1, 0, 0], // CO
+        [0, 1, 1, 0, 0], // OH
+        [0, 1, 0, 0, 0], // H
+        [0, 0, 1, 0, 0], // O
+        [0, 0, 0, 1, 0], // N
+        [0, 0, 1, 1, 0], // NO
+        [0, 0, 2, 1, 0], // NO2
+        [0, 1, 2, 0, 0], // HO2
+        [0, 2, 2, 0, 0], // H2O2
+        [1, 4, 0, 0, 0], // CH4
+        [0, 0, 0, 0, 1], // Ar
+        [3, 8, 0, 0, 0], // C3H8
+        [0, 3, 0, 1, 0], // NH3
+      ];
+
+      // Stoichiometric O2 per mole of fuel
+      const STOICH_O2 = { CH4: 2, H2: 0.5, C3H8: 5 };
+
+      // Preset definitions: { fuel, fuel_moles, oxidizer_type }
+      const PRESETS = {
+        ch4_air: { fuel: "CH4", moles: 1, air: true },
+        h2_air: { fuel: "H2", moles: 1, air: true },
+        c3h8_air: { fuel: "C3H8", moles: 1, air: true },
+        h2_o2: { fuel: "H2", moles: 2, air: false },
+        ch4_o2: { fuel: "CH4", moles: 1, air: false },
+      };
+
+      let wasmReady = false;
+      let solvePtr = null;
+
+      // Solver state (warm start)
+      let state = null;
+
+      function resetState(feed, totalAtoms) {
+        // Floor loop removed from here!
+        const n = new Float64Array(N);
+        let nT = 0;
+
+        for (let i = 0; i < N; i++) {
+          let possible = true;
+          for (let j = 0; j < C_ELEM; j++) {
+            if (ATOM_MATRIX[i][j] > 0 && totalAtoms[j] <= 1e-11) {
+              possible = false;
+              break;
+            }
+          }
+
+          if (possible) {
+            n[i] = feed[i] + 0.1;
+          } else {
+            n[i] = 1e-12;
+          }
+          nT += n[i];
+        }
+
+        state = {
+          n: n,
+          nT: nT,
+          lambda: new Float64Array(C_ELEM).fill(1.0),
+          nu: 1.0,
+        };
+      }
+
+      function buildFeed(presetId, phi) {
+        const feed = new Float64Array(N);
+
+        if (presetId === "custom") {
+          document.querySelectorAll("#custom-feed input").forEach((inp) => {
+            const sp = inp.dataset.sp;
+            if (sp && IDX[sp] !== undefined) {
+              feed[IDX[sp]] = parseFloat(inp.value) || 0;
+            }
+          });
+          return feed;
+        }
+
+        const preset = PRESETS[presetId];
+        const stoichO2 = STOICH_O2[preset.fuel] * preset.moles;
+        const actualO2 = stoichO2 / phi;
+
+        feed[IDX[preset.fuel]] = preset.moles;
+        feed[IDX.O2] = actualO2;
+
+        if (preset.air) {
+          feed[IDX.N2] = actualO2 * 3.76;
+          feed[IDX.Ar] = actualO2 * 0.045;
+        }
+
+        return feed;
+      }
+
+      function computeTotalAtoms(feed) {
+        const atoms = new Float64Array(C_ELEM);
+        for (let i = 0; i < N; i++) {
+          for (let j = 0; j < C_ELEM; j++) {
+            atoms[j] += feed[i] * ATOM_MATRIX[i][j];
+          }
+        }
+        return atoms;
+      }
+
+      function runSolver(doReset = false) {
+        if (!wasmReady) return;
+
+        const T = parseFloat(document.getElementById("temp").value);
+        const phi = parseFloat(document.getElementById("phi").value);
+        const presetId = document.getElementById("preset").value;
+        const feed = buildFeed(presetId, phi);
+
+        const totalFeed = feed.reduce((a, b) => a + b, 0);
+        if (totalFeed < 1e-10) return;
+
+        const totalAtoms = computeTotalAtoms(feed);
+
+        for (let j = 0; j < C_ELEM; j++) {
+          if (totalAtoms[j] < 1e-12) totalAtoms[j] = 1e-12;
+        }
+
+        // Only reset the state if explicitly requested or if it's the first run
+        if (doReset || !state) {
+          resetState(feed, totalAtoms);
+        }
+
+        // Normalize
+        for (let j = 0; j < C_ELEM; j++) totalAtoms[j] /= totalFeed;
+
+        // Allocate WASM memory
+        const dblSize = 8;
+        const nPtr = Module._malloc(N * dblSize);
+        const nTPtr = Module._malloc(dblSize);
+        const lamPtr = Module._malloc(C_ELEM * dblSize);
+        const nuPtr = Module._malloc(dblSize);
+        const atomPtr = Module._malloc(C_ELEM * dblSize);
+
+        const wasmBuffer = Module.wasmMemory
+          ? Module.wasmMemory.buffer
+          : HEAP8.buffer;
+        const HEAPF64 = new Float64Array(wasmBuffer);
+
+        // Copy state in
+        HEAPF64.set(state.n, nPtr / dblSize);
+        HEAPF64[nTPtr / dblSize] = state.nT;
+        HEAPF64.set(state.lambda, lamPtr / dblSize);
+        HEAPF64[nuPtr / dblSize] = state.nu;
+        HEAPF64.set(totalAtoms, atomPtr / dblSize);
+
+        const result = Module._solve(
+          T,
+          nPtr,
+          nTPtr,
+          lamPtr,
+          nuPtr,
+          atomPtr,
+          N,
+          C_ELEM,
+        );
+
+        // Read state back
+        state.n = new Float64Array(HEAPF64.buffer, nPtr, N).slice();
+        state.nT = HEAPF64[nTPtr / dblSize];
+        state.lambda = new Float64Array(HEAPF64.buffer, lamPtr, C_ELEM).slice();
+        state.nu = HEAPF64[nuPtr / dblSize];
+
+        // Free
+        Module._free(nPtr);
+        Module._free(nTPtr);
+        Module._free(lamPtr);
+        Module._free(nuPtr);
+        Module._free(atomPtr);
+
+        updateUI(result, T);
+      }
+
+      function updateUI(result, T) {
+        const statusEl = document.getElementById("status");
+
+        if (result >= 0) {
+          statusEl.className = "status ok";
+          statusEl.textContent = `Converged in ${result} iters @ T = ${T} K`;
+        } else if (result === -1) {
+          statusEl.className = "status err";
+          statusEl.textContent = "Singular Jacobian";
+          return;
+        } else {
+          statusEl.className = "status err";
+          statusEl.textContent = "Did not converge";
+          return;
+        }
+
+        // Build sorted results
+        const nT = state.nT;
+        let totalMass = 0;
+        for (let i = 0; i < N; i++) totalMass += state.n[i] * MOL_WEIGHTS[i];
+
+        const rows = [];
+        for (let i = 0; i < N; i++) {
+          const xi = state.n[i] / nT;
+          const wi = (state.n[i] * MOL_WEIGHTS[i]) / totalMass;
+          rows.push({ idx: i, name: SPECIES[i], ni: state.n[i], xi, wi });
+        }
+        rows.sort((a, b) => b.xi - a.xi);
+
+        // Bar chart
+        const chart = document.getElementById("chart");
+        const maxX = Math.max(...rows.map((r) => r.xi), 1e-10);
+
+        chart.innerHTML = rows
+          .filter((r) => r.xi > 1e-8)
+          .map((r) => {
+            const pct = ((r.xi / maxX) * 100).toFixed(2);
+            const color = COLORS[r.idx];
+            const xStr =
+              r.xi > 0.001
+                ? (r.xi * 100).toFixed(2) + "%"
+                : r.xi.toExponential(2);
+            return `<div class="bar-row">
+        <span class="bar-label">${DISPLAY[r.name]}</span>
+        <div class="bar-track">
+          <div class="bar-fill" style="width:${pct}%;background:${color}"></div>
+        </div>
+        <span class="bar-value">${xStr}</span>
+      </div>`;
+          })
+          .join("");
+
+        // Table
+        const tbody = document.querySelector("#results tbody");
+        tbody.innerHTML = rows
+          .filter((r) => r.ni > 1e-10)
+          .map((r) => {
+            const niStr =
+              r.ni > 0.001 ? r.ni.toFixed(6) : r.ni.toExponential(3);
+            const xiStr =
+              r.xi > 0.001
+                ? (r.xi * 100).toFixed(4) + "%"
+                : r.xi.toExponential(3);
+            const wiStr =
+              r.wi > 0.001
+                ? (r.wi * 100).toFixed(4) + "%"
+                : r.wi.toExponential(3);
+            return `<tr>
+        <td>${DISPLAY[r.name]}</td>
+        <td>${niStr}</td>
+        <td>${xiStr}</td>
+        <td>${wiStr}</td>
+      </tr>`;
+          })
+          .join("");
+      }
+
+      // Event listeners
+      document.getElementById("temp").addEventListener("input", (e) => {
+        document.getElementById("temp-val").textContent = e.target.value + " K";
+        runSolver(false); // Temperature change -> Warm start!
+      });
+
+      document.getElementById("phi").addEventListener("input", (e) => {
+        document.getElementById("phi-val").textContent =
+          "φ = " + parseFloat(e.target.value).toFixed(2);
+        runSolver(true); // Composition change -> Reset state!
+      });
+
+      document.getElementById("preset").addEventListener("change", (e) => {
+        const custom = document.getElementById("custom-feed");
+        custom.classList.toggle("visible", e.target.value === "custom");
+        runSolver(true); // Composition change -> Reset state!
+      });
+
+      document.querySelectorAll("#custom-feed input").forEach((inp) => {
+        inp.addEventListener("input", () => {
+          runSolver(true); // Composition change -> Reset state!
+        });
+      });
+
+      // Load WASM
+      var Module = {
+        onRuntimeInitialized: function () {
+          Module._init();
+          wasmReady = true;
+          document.getElementById("status").className = "status ok";
+          document.getElementById("status").textContent = "WASM ready";
+          runSolver(true); // Initial load -> Reset state!
+        },
+      };
+    </script>
+    <script src="main.js"></script>
+  </body>
+</html>

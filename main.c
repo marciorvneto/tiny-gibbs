@@ -1,7 +1,15 @@
+#define TINY_LA_IMPLEMENTATION
+#include "tinyla.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#else
+#define EMSCRIPTEN_KEEPALIVE
+#endif
 
 #define DB_PATH "./db/nasa9_combustion.dat"
 #define MAX_LINE_SIZE 1024
@@ -223,15 +231,325 @@ void parse_db(Parser *p, DBData *db) {
 //
 //================================
 
-int main() {
-  Arena a = arena_create(1024 * 1024); // 1MB
+#define R_GAS 8.314472
 
+double gibbs_nondim(DBComponent *sp, double T) {
+  double *c = (T <= sp->T_mid) ? sp->low : sp->high;
+  double T2 = T * T, T3 = T2 * T, T4 = T3 * T, lnT = log(T);
+
+  double H_RT = -c[0] / (T2) + c[1] * lnT / T + c[2] + c[3] * T / 2.0 +
+                c[4] * T2 / 3.0 + c[5] * T3 / 4.0 + c[6] * T4 / 5.0 + c[7] / T;
+
+  double S_R = -c[0] / (2.0 * T2) - c[1] / T + c[2] * lnT + c[3] * T +
+               c[4] * T2 / 2.0 + c[5] * T3 / 3.0 + c[6] * T4 / 4.0 + c[8];
+
+  return H_RT - S_R;
+}
+
+double potential_RT(double n_i, double nT, double T, double gamma_i,
+                    DBComponent *sp) {
+  return gibbs_nondim(sp, T) + log(n_i) - log(nT) + log(gamma_i);
+}
+
+// TODO: Include the derivation in the repo
+// Build the KKT Jacobian: size (N+1+C+1) x (N+1+C+1)
+//  [ diag(1/n)   -1/nT    A      1  ]
+//  [ -1/nT       Σn/nT²   0     -1  ]
+//  [  A^T         0        0      0  ]
+//  [  1^T        -1        0      0  ]
+// where A is the atom matrix (N x C)
+void build_jacobian(tla_Matrix *J, double *n, double nT, int N, int C,
+                    tla_Matrix *A) {
+  int S = N + 1 + C + 1;
+
+  // Zero everything
+  for (int i = 0; i < S; i++)
+    for (int j = 0; j < S; j++)
+      tla_matrix_set_value(J, i, j, 0.0);
+
+  // Block: diag(1/n_i)
+  for (int i = 0; i < N; i++)
+    tla_matrix_set_value(J, i, i, 1.0 / n[i]);
+
+  // Block: -1/nT column and row
+  for (int i = 0; i < N; i++) {
+    tla_matrix_set_value(J, i, N, -1.0 / nT); // col N
+    tla_matrix_set_value(J, N, i, -1.0 / nT); // row N
+  }
+
+  // Block: nT diagonal
+  double sum_n = 0;
+  for (int i = 0; i < N; i++)
+    sum_n += n[i];
+  tla_matrix_set_value(J, N, N, sum_n / (nT * nT));
+
+  // Block: A (atom matrix) and A^T
+  for (int i = 0; i < N; i++) {
+    for (int j = 0; j < C; j++) {
+      double a_ij = tla_matrix_get_value(A, i, j);
+      tla_matrix_set_value(J, i, N + 1 + j, a_ij); // A
+      tla_matrix_set_value(J, N + 1 + j, i, a_ij); // A^T
+    }
+  }
+
+  // Block: ν column and row (ones)
+  int nu_col = N + 1 + C;
+  for (int i = 0; i < N; i++) {
+    tla_matrix_set_value(J, i, nu_col, 1.0);
+    tla_matrix_set_value(J, nu_col, i, 1.0);
+  }
+
+  // nT-ν entries
+  tla_matrix_set_value(J, N, nu_col, -1.0);
+  tla_matrix_set_value(J, nu_col, N, -1.0);
+}
+
+// Build the RHS (negative gradient of Lagrangian)
+void build_rhs(tla_Vector *rhs, double *n, double nT, double *lambda, double nu,
+               double T, double *gamma, double *total_atoms, int N, int C,
+               tla_Matrix *A, DBComponent *species) {
+
+  // dL/dn_i = μ_i/RT + Σ_j λ_j a_ij + ν
+  for (int i = 0; i < N; i++) {
+    double mu = potential_RT(n[i], nT, T, gamma[i], &species[i]);
+    double atom_term = 0;
+    for (int j = 0; j < C; j++)
+      atom_term += lambda[j] * tla_matrix_get_value(A, i, j);
+    tla_vector_set_value(rhs, i, -(mu + atom_term + nu));
+  }
+
+  // dL/dnT = -Σn/nT - ν
+  double sum_n = 0;
+  for (int i = 0; i < N; i++)
+    sum_n += n[i];
+  tla_vector_set_value(rhs, N, -(-sum_n / nT - nu));
+
+  // dL/dλ_j = Σ_i n_i a_ij - b_j
+  for (int j = 0; j < C; j++) {
+    double balance = -total_atoms[j];
+    for (int i = 0; i < N; i++)
+      balance += n[i] * tla_matrix_get_value(A, i, j);
+    tla_vector_set_value(rhs, N + 1 + j, -balance);
+  }
+
+  // dL/dν = Σn - nT
+  tla_vector_set_value(rhs, N + 1 + C, -(sum_n - nT));
+}
+
+//================================
+//
+//   Numerical
+//
+//================================
+
+int gibbs_solve_nr(double *n, double *nT, double *lambda, double *nu, double T,
+                   double *gamma, double *total_atoms, int N, int C,
+                   tla_Matrix *A, DBComponent *species, tla_Arena *scratch) {
+
+  int S = N + 1 + C + 1; // total system size
+  double tol = 1e-8;
+  int max_iter = 100;
+
+  for (int iter = 0; iter < max_iter; iter++) {
+    size_t save = tla_arena_save(scratch);
+
+    // Build RHS and Jacobian
+    tla_Vector *rhs = tla_vector_create(scratch, S);
+    tla_Matrix *J = tla_matrix_create(scratch, S, S);
+
+    build_rhs(rhs, n, *nT, lambda, *nu, T, gamma, total_atoms, N, C, A,
+              species);
+    build_jacobian(J, n, *nT, N, C, A);
+
+    // Check convergence (infinity norm of rhs, which is -F)
+    double err = 0;
+    for (int i = 0; i < S; i++) {
+      double v = fabs(tla_vector_get_value(rhs, i));
+      if (v > err)
+        err = v;
+    }
+    if (err < tol) {
+      tla_arena_restore(scratch, save);
+      return iter;
+    }
+
+    // Solve J * dx = rhs  (rhs is already -F)
+    tla_Matrix *aug = tla_matrix_append_column(scratch, J, rhs);
+    int code;
+    tla_Vector *dx = gauss_solve_new(scratch, aug, &code);
+    if (code != 0) {
+      tla_arena_restore(scratch, save);
+      return -1; // singular
+    }
+
+    // Unpack
+    double *dn = dx->values;            // [0..N-1]
+    double dnT = dx->values[N];         // [N]
+    double *dlamb = dx->values + N + 1; // [N+1..N+C]
+    double dnu = dx->values[N + 1 + C]; // [N+1+C]
+
+    // IMPORTANT: Do not skip this step!
+    // Damping: fraction to boundary
+    double alpha = 1.0;
+    double tau = 0.99;
+    for (int i = 0; i < N; i++) {
+      if (dn[i] < 0.0) {
+        double max_step = -n[i] / dn[i];
+        if (tau * max_step < alpha)
+          alpha = tau * max_step;
+      }
+    }
+    if (dnT < 0.0) {
+      double max_step = -(*nT) / dnT;
+      if (tau * max_step < alpha)
+        alpha = tau * max_step;
+    }
+
+    // Apply step
+    for (int i = 0; i < N; i++)
+      n[i] += alpha * dn[i];
+    *nT += alpha * dnT;
+    for (int j = 0; j < C; j++)
+      lambda[j] += alpha * dlamb[j];
+    *nu += alpha * dnu;
+
+    tla_arena_restore(scratch, save);
+  }
+  return -2; // didn't converge
+}
+
+//================================
+//
+//   WASM API
+//
+//================================
+
+static DBData g_db;
+static const char *g_elements[] = {"C", "H", "O", "N", "Ar"};
+
+EMSCRIPTEN_KEEPALIVE
+void init() {
+  Arena a = arena_create(1024 * 1024);
   const char *contents = read_db_file(&a, DB_PATH);
   Parser p = create_parser(contents);
-
-  DBData db = {0};
-  parse_db(&p, &db);
-
+  parse_db(&p, &g_db);
   arena_destroy(&a);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int solve(double T, double *n, double *nT, double *lambda, double *nu,
+          double *total_atoms, int N, int C) {
+
+  tla_Arena arena = tla_arena_create(4 * 1024 * 1024);
+
+  tla_Matrix *A = tla_matrix_of_value(&arena, N, C, 0.0);
+  for (int i = 0; i < N; i++) {
+    DBComponent *sp = &g_db.components[i];
+    for (int k = 0; k < sp->n_elements; k++) {
+      for (int j = 0; j < C; j++) {
+        if (strcmp(sp->atoms[k].symbol, g_elements[j]) == 0) {
+          tla_matrix_set_value(A, i, j, (double)sp->atoms[k].count);
+          break;
+        }
+      }
+    }
+  }
+
+  double *gamma = tla_arena_alloc(&arena, N * sizeof(double));
+  for (int i = 0; i < N; i++)
+    gamma[i] = 1.0;
+
+  int result = gibbs_solve_nr(n, nT, lambda, nu, T, gamma, total_atoms, N, C, A,
+                              g_db.components, &arena);
+
+  tla_arena_destroy(&arena);
+  return result;
+}
+
+int main() {
+  init(); // Reuse the same init for native builds
+
+  int N = g_db.num_components;
+  int C = 5;
+
+  // Build atom matrix
+  tla_Arena la = tla_arena_create(1024 * 1024);
+  tla_Matrix *A = tla_matrix_of_value(&la, N, C, 0.0);
+  for (int i = 0; i < N; i++) {
+    DBComponent *sp = &g_db.components[i];
+    for (int k = 0; k < sp->n_elements; k++) {
+      for (int j = 0; j < C; j++) {
+        if (strcmp(sp->atoms[k].symbol, g_elements[j]) == 0) {
+          tla_matrix_set_value(A, i, j, (double)sp->atoms[k].count);
+          break;
+        }
+      }
+    }
+  }
+
+  // CH4/air test
+  double feed[MAX_COMPONENTS] = {0};
+  int idx_ch4 = -1, idx_o2 = -1, idx_n2 = -1, idx_ar = -1;
+  for (int i = 0; i < N; i++) {
+    if (strcmp(g_db.components[i].name, "CH4") == 0)
+      idx_ch4 = i;
+    if (strcmp(g_db.components[i].name, "O2") == 0)
+      idx_o2 = i;
+    if (strcmp(g_db.components[i].name, "N2") == 0)
+      idx_n2 = i;
+    if (strcmp(g_db.components[i].name, "Ar") == 0)
+      idx_ar = i;
+  }
+
+  feed[idx_ch4] = 1.0;
+  feed[idx_o2] = 2.0;
+  feed[idx_n2] = 7.52;
+  feed[idx_ar] = 0.09;
+
+  double total_atoms[5] = {0};
+  for (int j = 0; j < C; j++)
+    for (int i = 0; i < N; i++)
+      total_atoms[j] += feed[i] * tla_matrix_get_value(A, i, j);
+
+  double total_feed = 0;
+  for (int i = 0; i < N; i++)
+    total_feed += feed[i];
+  for (int j = 0; j < C; j++)
+    total_atoms[j] /= total_feed;
+
+  double n[MAX_COMPONENTS];
+  for (int i = 0; i < N; i++)
+    n[i] = 1.0 / N;
+  double nT = 1.0;
+  double lambda[5] = {1.0, 1.0, 1.0, 1.0, 1.0};
+  double nu = 1.0;
+  double gamma[MAX_COMPONENTS];
+  for (int i = 0; i < N; i++)
+    gamma[i] = 1.0;
+
+  double T = 2000.0;
+  tla_Arena scratch = tla_arena_create(4 * 1024 * 1024);
+
+  int result = gibbs_solve_nr(n, &nT, lambda, &nu, T, gamma, total_atoms, N, C,
+                              A, g_db.components, &scratch);
+
+  if (result >= 0) {
+    printf("Converged in %d iterations at T = %.1f K\n\n", result, T);
+    printf("%-8s %12s %12s\n", "Species", "n_i", "x_i");
+    printf("--------------------------------------\n");
+    for (int i = 0; i < N; i++) {
+      if (n[i] > 1e-6)
+        printf("%-8s %12.6f %12.6f\n", g_db.components[i].name, n[i],
+               n[i] / nT);
+    }
+    printf("\nTotal moles: %.6f\n", nT);
+  } else if (result == -1) {
+    printf("Failed: singular Jacobian\n");
+  } else {
+    printf("Failed: did not converge\n");
+  }
+
+  tla_arena_destroy(&scratch);
+  tla_arena_destroy(&la);
   return 0;
 }
