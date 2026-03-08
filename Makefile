@@ -25,4 +25,4 @@ $(OUT_BROWSER_DIR):
 
 clean:
 	@rm -rf $(OUT_DIR)
-	@rm -rf $(OUT_BROWSER_DIR)
+	@rm -f $(OUT_BROWSER_DIR)/main.js $(OUT_BROWSER_DIR)/main.wasm
