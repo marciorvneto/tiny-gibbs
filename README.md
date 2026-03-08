@@ -44,7 +44,7 @@ This will generate:
 
 ## Mathematical Formulation
 
-For a complete derivation of the KKT conditions and the resulting Jacobian block matrix formulated using Fréchet differentials, please refer to the included **[derivation.pdf](https://www.google.com/search?q=./derivation.pdf)**.
+For a complete derivation of the KKT conditions and the resulting Jacobian block matrix formulated using Fréchet differentials, please refer to the included **[derivation.pdf](./derivation.pdf)**.
 
 **Acknowledgments:** The mathematical approach used in this derivation was heavily inspired by the beautiful coordinate-free matrix calculus taught by Professors Alan Edelman and Steven G. Johnson in their MIT course, _Matrix Calculus for Machine Learning and Beyond_. Their presentation of matrix calculus through differentials and linear operators was instrumental in shaping the mathematical viewpoint of this solver.
 You can find a [link to the course from MIT OCW here](https://ocw.mit.edu/courses/18-s096-matrix-calculus-for-machine-learning-and-beyond-january-iap-2023/)
