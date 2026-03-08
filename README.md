@@ -22,7 +22,7 @@ Because this project relies on `tinyla` as a submodule, make sure to initialize 
 
 ```bash
 # Clone the repo with submodules
-git clone --recursive https://github.com/marciorvneto/tiny-gibbs.git
+git clone --recursive [https://github.com/marciorvneto/tiny-gibbs.git](https://github.com/marciorvneto/tiny-gibbs.git)
 cd tiny-gibbs
 
 # Or, if you already cloned it without submodules, run:
@@ -44,7 +44,10 @@ This will generate:
 
 ## Mathematical Formulation
 
-_(Note: A complete derivation of the KKT conditions and the resulting Jacobian block matrix, formulated using Fréchet differentials, will be added here soon.)_
+For a complete derivation of the KKT conditions and the resulting Jacobian block matrix formulated using Fréchet differentials, please refer to the included **[derivation.pdf](https://www.google.com/search?q=./derivation.pdf)**.
+
+**Acknowledgments:** The mathematical approach used in this derivation was heavily inspired by the beautiful coordinate-free matrix calculus taught by Professors Alan Edelman and Steven G. Johnson in their MIT course, _Matrix Calculus for Machine Learning and Beyond_. Their presentation of matrix calculus through differentials and linear operators was instrumental in shaping the mathematical viewpoint of this solver.
+You can find a [link to the course from MIT OCW here](https://ocw.mit.edu/courses/18-s096-matrix-calculus-for-machine-learning-and-beyond-january-iap-2023/)
 
 ## Interested in the theory?
 
