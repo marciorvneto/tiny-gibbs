@@ -16,7 +16,6 @@ $(TARGET): main.c | $(OUT_DIR)
 
 $(TARGET_BROWSER): main.c | $(OUT_BROWSER_DIR)
 	emcc $(EMCC_FLAGS) $(CPPFLAGS) $< -o $@ -lm --embed-file db/nasa9_combustion.dat@db/nasa9_combustion.dat
-	@cp ./index.html $(OUT_BROWSER_DIR)/index.html
 
 $(OUT_DIR):
 	@mkdir -p $(OUT_DIR)
