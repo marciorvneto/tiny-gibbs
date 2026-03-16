@@ -295,9 +295,10 @@ double mixture_gamma(double *n, double nT, int N, double T,
   return Cp_over_R / Cv_over_R;
 }
 
-double potential_RT(double n_i, double nT, double T, double gamma_i,
-                    DBComponent *sp) {
-  return gibbs_nondim(sp, T) + log(n_i) - log(nT) + log(gamma_i);
+double potential_RT(double n_i, double nT, double T, double P, double Pref,
+                    double gamma_i, DBComponent *sp) {
+  return gibbs_nondim(sp, T) + log(n_i) - log(nT) + log(gamma_i) +
+         log(P / Pref);
 }
 
 // TODO: Include the derivation in the repo
@@ -355,12 +356,13 @@ void build_jacobian(tla_Matrix *J, double *n, double nT, int N, int C,
 
 // Build the RHS (negative gradient of Lagrangian)
 void build_rhs(tla_Vector *rhs, double *n, double nT, double *lambda, double nu,
-               double T, double *gamma, double *total_atoms, int N, int C,
-               tla_Matrix *A, DBComponent *species) {
+               double T, double P, double Pref, double *gamma,
+               double *total_atoms, int N, int C, tla_Matrix *A,
+               DBComponent *species) {
 
   // dL/dn_i = μ_i/RT + Σ_j λ_j a_ij + ν
   for (int i = 0; i < N; i++) {
-    double mu = potential_RT(n[i], nT, T, gamma[i], &species[i]);
+    double mu = potential_RT(n[i], nT, T, P, Pref, gamma[i], &species[i]);
     double atom_term = 0;
     for (int j = 0; j < C; j++)
       atom_term += lambda[j] * tla_matrix_get_value(A, i, j);
@@ -392,8 +394,9 @@ void build_rhs(tla_Vector *rhs, double *n, double nT, double *lambda, double nu,
 //================================
 
 int gibbs_solve_nr(double *n, double *nT, double *lambda, double *nu, double T,
-                   double *gamma, double *total_atoms, int N, int C,
-                   tla_Matrix *A, DBComponent *species, tla_Arena *scratch) {
+                   double P, double Pref, double *gamma, double *total_atoms,
+                   int N, int C, tla_Matrix *A, DBComponent *species,
+                   tla_Arena *scratch) {
 
   int S = N + 1 + C + 1; // total system size
   double tol = 1e-8;
@@ -406,7 +409,7 @@ int gibbs_solve_nr(double *n, double *nT, double *lambda, double *nu, double T,
     tla_Vector *rhs = tla_vector_create(scratch, S);
     tla_Matrix *J = tla_matrix_create(scratch, S, S);
 
-    build_rhs(rhs, n, *nT, lambda, *nu, T, gamma, total_atoms, N, C, A,
+    build_rhs(rhs, n, *nT, lambda, *nu, T, P, Pref, gamma, total_atoms, N, C, A,
               species);
     build_jacobian(J, n, *nT, N, C, A);
 
@@ -473,40 +476,43 @@ typedef struct {
   int status; // 0 = converged, -1 = inner failed, -2 = outer didn't converge
 } AdiabaticResult;
 
-AdiabaticResult solve_adiabatic(double T_feed, double T_guess, double *feed,
-                                double *total_atoms, int N, int C,
-                                tla_Matrix *A, DBComponent *species,
-                                tla_Arena *scratch) {
+AdiabaticResult solve_adiabatic(double T_feed, double T_guess, double P,
+                                double Pref, double *feed, double *total_atoms,
+                                int N, int C, tla_Matrix *A,
+                                DBComponent *species, tla_Arena *scratch) {
 
   AdiabaticResult res = {0};
-  double tol = 0.5; // 0.5 K tolerance on T
+  double tol = 0.5;
   int max_outer = 50;
 
-  // Compute reactant enthalpy at feed temperature
   double H_react = mixture_enthalpy_over_R(feed, N, T_feed, species);
-
   double T = T_guess;
 
-  // Working arrays for inner solver — re-initialized each outer iteration
+  // Working arrays for inner solver
   double n[MAX_COMPONENTS];
   double nT;
   double lambda[5];
   double nu;
   double gamma[MAX_COMPONENTS];
 
-  for (int outer = 0; outer < max_outer; outer++) {
-    // Re-initialize inner solver state for this T
-    for (int i = 0; i < N; i++)
-      n[i] = 1.0 / N;
-    nT = 1.0;
-    for (int j = 0; j < C; j++)
-      lambda[j] = 1.0;
-    nu = 1.0;
-    for (int i = 0; i < N; i++)
-      gamma[i] = 1.0;
+  // 1. INITIALIZE ONCE (Warm Start)
+  for (int i = 0; i < N; i++)
+    n[i] = 1.0 / N;
+  nT = 1.0;
+  for (int j = 0; j < C; j++)
+    lambda[j] = 1.0;
+  nu = 1.0;
+  for (int i = 0; i < N; i++)
+    gamma[i] = 1.0;
 
-    // Solve equilibrium composition at current T
-    int inner_result = gibbs_solve_nr(n, &nT, lambda, &nu, T, gamma,
+  // Variables for the Secant method
+  double T_old = T;
+  double f_old = 0.0;
+
+  for (int outer = 0; outer < max_outer; outer++) {
+
+    // Inner solver uses the previous loop's equilibrium as the guess
+    int inner_result = gibbs_solve_nr(n, &nT, lambda, &nu, T, P, Pref, gamma,
                                       total_atoms, N, C, A, species, scratch);
     if (inner_result < 0) {
       res.status = -1;
@@ -515,13 +521,10 @@ AdiabaticResult solve_adiabatic(double T_feed, double T_guess, double *feed,
       return res;
     }
 
-    // Evaluate energy residual: f(T) = H_prod(T) - H_react(T_feed)
     double H_prod = mixture_enthalpy_over_R(n, N, T, species);
     double f = H_prod - H_react;
-
-    // Check convergence
-    // |f| < tol * Cp gives us sub-Kelvin accuracy
     double Cp = mixture_cp_over_R(n, N, T, species);
+
     if (fabs(f / Cp) < tol) {
       res.T_ad = T;
       res.outer_iters = outer + 1;
@@ -529,16 +532,32 @@ AdiabaticResult solve_adiabatic(double T_feed, double T_guess, double *feed,
       return res;
     }
 
-    // Newton step: dT = -f / Cp
-    double dT = -f / Cp;
+    double dT;
+    // 2. SECANT METHOD
+    if (outer == 0) {
+      // First iteration: Fallback to frozen Cp to generate a second point
+      dT = -f / Cp;
+    } else {
+      double df_dT = (f - f_old) / (T - T_old);
+
+      // Safety net: if slope is too flat or negative (unphysical), use frozen
+      // Cp
+      if (fabs(df_dT) < 1e-6 || df_dT < 0) {
+        dT = -f / Cp;
+      } else {
+        dT = -f / df_dT;
+      }
+    }
 
     // Clamp step to avoid wild jumps
-    if (dT > 500.0)
-      dT = 500.0;
-    if (dT < -500.0)
-      dT = -500.0;
+    if (dT > 100.0)
+      dT = 100.0;
+    if (dT < -100.0)
+      dT = -100.0;
 
-    // Keep T in a physically reasonable range
+    T_old = T;
+    f_old = f;
+
     T += dT;
     if (T < 300.0)
       T = 300.0;
@@ -571,8 +590,8 @@ void init() {
 }
 
 EMSCRIPTEN_KEEPALIVE
-int solve(double T, double *n, double *nT, double *lambda, double *nu,
-          double *total_atoms, int N, int C) {
+int solve(double T, double P, double Pref, double *n, double *nT,
+          double *lambda, double *nu, double *total_atoms, int N, int C) {
 
   tla_Arena arena = tla_arena_create(4 * 1024 * 1024);
 
@@ -593,8 +612,8 @@ int solve(double T, double *n, double *nT, double *lambda, double *nu,
   for (int i = 0; i < N; i++)
     gamma[i] = 1.0;
 
-  int result = gibbs_solve_nr(n, nT, lambda, nu, T, gamma, total_atoms, N, C, A,
-                              g_db.components, &arena);
+  int result = gibbs_solve_nr(n, nT, lambda, nu, T, P, Pref, gamma, total_atoms,
+                              N, C, A, g_db.components, &arena);
 
   tla_arena_destroy(&arena);
   return result;
@@ -604,8 +623,9 @@ int solve(double T, double *n, double *nT, double *lambda, double *nu,
 // Returns T_ad (K), or negative on failure
 // Writes equilibrium composition into n[], nT, and gamma_ratio
 EMSCRIPTEN_KEEPALIVE
-double solve_adiabatic_temperature(double T_feed, double T_guess, double *feed,
-                                   double *n, double *nT, double *gamma_ratio,
+double solve_adiabatic_temperature(double T_feed, double T_guess, double P,
+                                   double Pref, double *feed, double *n,
+                                   double *nT, double *gamma_ratio,
                                    double *total_atoms, int N, int C,
                                    int *iterations) {
 
@@ -627,8 +647,9 @@ double solve_adiabatic_temperature(double T_feed, double T_guess, double *feed,
 
   tla_Arena scratch = tla_arena_create(4 * 1024 * 1024);
 
-  AdiabaticResult res = solve_adiabatic(T_feed, T_guess, feed, total_atoms, N,
-                                        C, A, g_db.components, &scratch);
+  AdiabaticResult res =
+      solve_adiabatic(T_feed, T_guess, P, Pref, feed, total_atoms, N, C, A,
+                      g_db.components, &scratch);
 
   // If converged, do one final equilibrium solve at T_ad to populate n[] and nT
   if (res.status == 0) {
@@ -642,8 +663,8 @@ double solve_adiabatic_temperature(double T_feed, double T_guess, double *feed,
     for (int i = 0; i < N; i++)
       gamma[i] = 1.0;
 
-    gibbs_solve_nr(n, nT, lambda, &nu_val, res.T_ad, gamma, total_atoms, N, C,
-                   A, g_db.components, &scratch);
+    gibbs_solve_nr(n, nT, lambda, &nu_val, res.T_ad, P, Pref, gamma,
+                   total_atoms, N, C, A, g_db.components, &scratch);
 
     // Compute heat capacity ratio at equilibrium
     *gamma_ratio = mixture_gamma(n, *nT, N, res.T_ad, g_db.components);
@@ -659,6 +680,8 @@ double solve_adiabatic_temperature(double T_feed, double T_guess, double *feed,
 int main() {
   init();
 
+  double P = 1;
+  double Pref = 1;
   int N = g_db.num_components;
   int C = 5;
 
@@ -729,8 +752,9 @@ int main() {
     double T = 2000.0;
     tla_Arena scratch = tla_arena_create(4 * 1024 * 1024);
 
-    int result = gibbs_solve_nr(n, &nT, lambda, &nu, T, gamma, total_atoms, N,
-                                C, A, g_db.components, &scratch);
+    int result =
+        gibbs_solve_nr(n, &nT, lambda, &nu, T, P, Pref, gamma, total_atoms, N,
+                       C, A, g_db.components, &scratch);
 
     if (result >= 0) {
       printf("Converged in %d iterations at T = %.1f K\n\n", result, T);
@@ -763,8 +787,8 @@ int main() {
     tla_Arena scratch = tla_arena_create(4 * 1024 * 1024);
 
     AdiabaticResult res =
-        solve_adiabatic(T_feed, T_guess, feed_norm, total_atoms, N, C, A,
-                        g_db.components, &scratch);
+        solve_adiabatic(T_feed, T_guess, P, Pref, feed_norm, total_atoms, N, C,
+                        A, g_db.components, &scratch);
 
     if (res.status == 0) {
       printf("Converged in %d outer iterations\n", res.outer_iters);
@@ -781,8 +805,8 @@ int main() {
       for (int i = 0; i < N; i++)
         gamma[i] = 1.0;
 
-      gibbs_solve_nr(n, &nT, lambda, &nu, res.T_ad, gamma, total_atoms, N, C, A,
-                     g_db.components, &scratch);
+      gibbs_solve_nr(n, &nT, lambda, &nu, res.T_ad, P, Pref, gamma, total_atoms,
+                     N, C, A, g_db.components, &scratch);
 
       printf("%-8s %12s %12s\n", "Species", "n_i", "x_i");
       printf("--------------------------------------\n");

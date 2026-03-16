@@ -7,7 +7,7 @@ TARGET_BROWSER := $(OUT_BROWSER_DIR)/main.js
 
 EMCC_FLAGS := -O3 -s ALLOW_MEMORY_GROWTH=1 \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
-  -s EXPORTED_FUNCTIONS='["_main", "_init","_solve","_malloc","_free"]'
+  -s EXPORTED_FUNCTIONS='["_main", "_init", "_solve", "_solve_adiabatic_temperature", "_malloc", "_free"]'
 
 all: $(TARGET) $(TARGET_BROWSER)
 
@@ -19,8 +19,9 @@ $(TARGET_BROWSER): main.c | $(OUT_BROWSER_DIR)
 
 $(OUT_DIR):
 	@mkdir -p $(OUT_DIR)
+	
 $(OUT_BROWSER_DIR):
-	mkdir -p $(OUT_BROWSER_DIR)
+	@mkdir -p $(OUT_BROWSER_DIR)
 
 clean:
 	@rm -rf $(OUT_DIR)
