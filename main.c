@@ -233,6 +233,22 @@ void parse_db(Parser *p, DBData *db) {
 
 #define R_GAS 8.314472
 
+double enthalpy_nondim(DBComponent *sp, double T) {
+  double *c = (T <= sp->T_mid) ? sp->low : sp->high;
+  double T2 = T * T, T3 = T2 * T, T4 = T3 * T, lnT = log(T);
+
+  return -c[0] / (T2) + c[1] * lnT / T + c[2] + c[3] * T / 2.0 +
+         c[4] * T2 / 3.0 + c[5] * T3 / 4.0 + c[6] * T4 / 5.0 + c[7] / T;
+}
+
+double entropy_nondim(DBComponent *sp, double T) {
+  double *c = (T <= sp->T_mid) ? sp->low : sp->high;
+  double T2 = T * T, T3 = T2 * T, T4 = T3 * T, lnT = log(T);
+
+  return -c[0] / (2.0 * T2) - c[1] / T + c[2] * lnT + c[3] * T +
+         c[4] * T2 / 2.0 + c[5] * T3 / 3.0 + c[6] * T4 / 4.0 + c[8];
+}
+
 double gibbs_nondim(DBComponent *sp, double T) {
   double *c = (T <= sp->T_mid) ? sp->low : sp->high;
   double T2 = T * T, T3 = T2 * T, T4 = T3 * T, lnT = log(T);
@@ -244,6 +260,39 @@ double gibbs_nondim(DBComponent *sp, double T) {
                c[4] * T2 / 2.0 + c[5] * T3 / 3.0 + c[6] * T4 / 4.0 + c[8];
 
   return H_RT - S_R;
+}
+
+double cp_nondim(DBComponent *sp, double T) {
+  double *c = (T <= sp->T_mid) ? sp->low : sp->high;
+  double T2 = T * T, T3 = T2 * T, T4 = T3 * T;
+
+  return c[0] / (T2) + c[1] / T + c[2] + c[3] * T + c[4] * T2 + c[5] * T3 +
+         c[6] * T4;
+}
+
+double mixture_enthalpy_over_R(double *n, int N, double T,
+                               DBComponent *species) {
+  double H = 0.0;
+  for (int i = 0; i < N; i++) {
+    H += n[i] * enthalpy_nondim(&species[i], T);
+  }
+  return H * T; // H_mix / R  [K·mol]
+}
+
+double mixture_cp_over_R(double *n, int N, double T, DBComponent *species) {
+  double Cp = 0.0;
+  for (int i = 0; i < N; i++) {
+    Cp += n[i] * cp_nondim(&species[i], T);
+  }
+  return Cp; // Cp_mix / R
+}
+
+// Assuming ideal gas, so that Cp - Cv = R
+double mixture_gamma(double *n, double nT, int N, double T,
+                     DBComponent *species) {
+  double Cp_over_R = mixture_cp_over_R(n, N, T, species);
+  double Cv_over_R = Cp_over_R - nT;
+  return Cp_over_R / Cv_over_R;
 }
 
 double potential_RT(double n_i, double nT, double T, double gamma_i,
@@ -418,6 +467,91 @@ int gibbs_solve_nr(double *n, double *nT, double *lambda, double *nu, double T,
   return -2; // didn't converge
 }
 
+typedef struct {
+  double T_ad;
+  int outer_iters;
+  int status; // 0 = converged, -1 = inner failed, -2 = outer didn't converge
+} AdiabaticResult;
+
+AdiabaticResult solve_adiabatic(double T_feed, double T_guess, double *feed,
+                                double *total_atoms, int N, int C,
+                                tla_Matrix *A, DBComponent *species,
+                                tla_Arena *scratch) {
+
+  AdiabaticResult res = {0};
+  double tol = 0.5; // 0.5 K tolerance on T
+  int max_outer = 50;
+
+  // Compute reactant enthalpy at feed temperature
+  double H_react = mixture_enthalpy_over_R(feed, N, T_feed, species);
+
+  double T = T_guess;
+
+  // Working arrays for inner solver — re-initialized each outer iteration
+  double n[MAX_COMPONENTS];
+  double nT;
+  double lambda[5];
+  double nu;
+  double gamma[MAX_COMPONENTS];
+
+  for (int outer = 0; outer < max_outer; outer++) {
+    // Re-initialize inner solver state for this T
+    for (int i = 0; i < N; i++)
+      n[i] = 1.0 / N;
+    nT = 1.0;
+    for (int j = 0; j < C; j++)
+      lambda[j] = 1.0;
+    nu = 1.0;
+    for (int i = 0; i < N; i++)
+      gamma[i] = 1.0;
+
+    // Solve equilibrium composition at current T
+    int inner_result = gibbs_solve_nr(n, &nT, lambda, &nu, T, gamma,
+                                      total_atoms, N, C, A, species, scratch);
+    if (inner_result < 0) {
+      res.status = -1;
+      res.T_ad = T;
+      res.outer_iters = outer;
+      return res;
+    }
+
+    // Evaluate energy residual: f(T) = H_prod(T) - H_react(T_feed)
+    double H_prod = mixture_enthalpy_over_R(n, N, T, species);
+    double f = H_prod - H_react;
+
+    // Check convergence
+    // |f| < tol * Cp gives us sub-Kelvin accuracy
+    double Cp = mixture_cp_over_R(n, N, T, species);
+    if (fabs(f / Cp) < tol) {
+      res.T_ad = T;
+      res.outer_iters = outer + 1;
+      res.status = 0;
+      return res;
+    }
+
+    // Newton step: dT = -f / Cp
+    double dT = -f / Cp;
+
+    // Clamp step to avoid wild jumps
+    if (dT > 500.0)
+      dT = 500.0;
+    if (dT < -500.0)
+      dT = -500.0;
+
+    // Keep T in a physically reasonable range
+    T += dT;
+    if (T < 300.0)
+      T = 300.0;
+    if (T > 6000.0)
+      T = 6000.0;
+  }
+
+  res.T_ad = T;
+  res.outer_iters = max_outer;
+  res.status = -2;
+  return res;
+}
+
 //================================
 //
 //   WASM API
@@ -466,13 +600,68 @@ int solve(double T, double *n, double *nT, double *lambda, double *nu,
   return result;
 }
 
+// WASM entry: solve for adiabatic flame temperature
+// Returns T_ad (K), or negative on failure
+// Writes equilibrium composition into n[], nT, and gamma_ratio
+EMSCRIPTEN_KEEPALIVE
+double solve_adiabatic_temperature(double T_feed, double T_guess, double *feed,
+                                   double *n, double *nT, double *gamma_ratio,
+                                   double *total_atoms, int N, int C,
+                                   int *iterations) {
+
+  tla_Arena arena = tla_arena_create(4 * 1024 * 1024);
+
+  // Build atom matrix
+  tla_Matrix *A = tla_matrix_of_value(&arena, N, C, 0.0);
+  for (int i = 0; i < N; i++) {
+    DBComponent *sp = &g_db.components[i];
+    for (int k = 0; k < sp->n_elements; k++) {
+      for (int j = 0; j < C; j++) {
+        if (strcmp(sp->atoms[k].symbol, g_elements[j]) == 0) {
+          tla_matrix_set_value(A, i, j, (double)sp->atoms[k].count);
+          break;
+        }
+      }
+    }
+  }
+
+  tla_Arena scratch = tla_arena_create(4 * 1024 * 1024);
+
+  AdiabaticResult res = solve_adiabatic(T_feed, T_guess, feed, total_atoms, N,
+                                        C, A, g_db.components, &scratch);
+
+  // If converged, do one final equilibrium solve at T_ad to populate n[] and nT
+  if (res.status == 0) {
+    double lambda[5] = {1.0, 1.0, 1.0, 1.0, 1.0};
+    double nu_val = 1.0;
+    double gamma[MAX_COMPONENTS];
+
+    for (int i = 0; i < N; i++)
+      n[i] = 1.0 / N;
+    *nT = 1.0;
+    for (int i = 0; i < N; i++)
+      gamma[i] = 1.0;
+
+    gibbs_solve_nr(n, nT, lambda, &nu_val, res.T_ad, gamma, total_atoms, N, C,
+                   A, g_db.components, &scratch);
+
+    // Compute heat capacity ratio at equilibrium
+    *gamma_ratio = mixture_gamma(n, *nT, N, res.T_ad, g_db.components);
+    *iterations = res.outer_iters;
+  }
+
+  tla_arena_destroy(&scratch);
+  tla_arena_destroy(&arena);
+
+  return (res.status == 0) ? res.T_ad : -(double)(res.status);
+}
+
 int main() {
-  init(); // Reuse the same init for native builds
+  init();
 
   int N = g_db.num_components;
   int C = 5;
 
-  // Build atom matrix
   tla_Arena la = tla_arena_create(1024 * 1024);
   tla_Matrix *A = tla_matrix_of_value(&la, N, C, 0.0);
   for (int i = 0; i < N; i++) {
@@ -487,7 +676,7 @@ int main() {
     }
   }
 
-  // CH4/air test
+  // CH4/air stoichiometric
   double feed[MAX_COMPONENTS] = {0};
   int idx_ch4 = -1, idx_o2 = -1, idx_n2 = -1, idx_ar = -1;
   for (int i = 0; i < N; i++) {
@@ -506,50 +695,118 @@ int main() {
   feed[idx_n2] = 7.52;
   feed[idx_ar] = 0.09;
 
+  // Compute atom balances (normalized per mole of mixture)
   double total_atoms[5] = {0};
-  for (int j = 0; j < C; j++)
-    for (int i = 0; i < N; i++)
-      total_atoms[j] += feed[i] * tla_matrix_get_value(A, i, j);
-
   double total_feed = 0;
   for (int i = 0; i < N; i++)
     total_feed += feed[i];
   for (int j = 0; j < C; j++)
+    for (int i = 0; i < N; i++)
+      total_atoms[j] += feed[i] * tla_matrix_get_value(A, i, j);
+  for (int j = 0; j < C; j++)
     total_atoms[j] /= total_feed;
 
-  double n[MAX_COMPONENTS];
+  // Normalize feed too (per mole of mixture)
+  double feed_norm[MAX_COMPONENTS] = {0};
   for (int i = 0; i < N; i++)
-    n[i] = 1.0 / N;
-  double nT = 1.0;
-  double lambda[5] = {1.0, 1.0, 1.0, 1.0, 1.0};
-  double nu = 1.0;
-  double gamma[MAX_COMPONENTS];
-  for (int i = 0; i < N; i++)
-    gamma[i] = 1.0;
+    feed_norm[i] = feed[i] / total_feed;
 
-  double T = 2000.0;
-  tla_Arena scratch = tla_arena_create(4 * 1024 * 1024);
+  //===================================
+  // Test 1: Fixed-T equilibrium at 2000 K
+  //===================================
+  printf("=== Fixed-T Equilibrium (T = 2000 K) ===\n\n");
+  {
+    double n[MAX_COMPONENTS];
+    for (int i = 0; i < N; i++)
+      n[i] = 1.0 / N;
+    double nT = 1.0;
+    double lambda[5] = {1.0, 1.0, 1.0, 1.0, 1.0};
+    double nu = 1.0;
+    double gamma[MAX_COMPONENTS];
+    for (int i = 0; i < N; i++)
+      gamma[i] = 1.0;
 
-  int result = gibbs_solve_nr(n, &nT, lambda, &nu, T, gamma, total_atoms, N, C,
-                              A, g_db.components, &scratch);
+    double T = 2000.0;
+    tla_Arena scratch = tla_arena_create(4 * 1024 * 1024);
 
-  if (result >= 0) {
-    printf("Converged in %d iterations at T = %.1f K\n\n", result, T);
-    printf("%-8s %12s %12s\n", "Species", "n_i", "x_i");
-    printf("--------------------------------------\n");
-    for (int i = 0; i < N; i++) {
-      if (n[i] > 1e-6)
-        printf("%-8s %12.6f %12.6f\n", g_db.components[i].name, n[i],
-               n[i] / nT);
+    int result = gibbs_solve_nr(n, &nT, lambda, &nu, T, gamma, total_atoms, N,
+                                C, A, g_db.components, &scratch);
+
+    if (result >= 0) {
+      printf("Converged in %d iterations at T = %.1f K\n\n", result, T);
+      printf("%-8s %12s %12s\n", "Species", "n_i", "x_i");
+      printf("--------------------------------------\n");
+      for (int i = 0; i < N; i++) {
+        if (n[i] > 1e-6)
+          printf("%-8s %12.6f %12.6f\n", g_db.components[i].name, n[i],
+                 n[i] / nT);
+      }
+      printf("\nTotal moles: %.6f\n", nT);
+
+      double gam = mixture_gamma(n, nT, N, T, g_db.components);
+      printf("Heat capacity ratio (gamma): %.4f\n", gam);
+    } else {
+      printf("Failed (code %d)\n", result);
     }
-    printf("\nTotal moles: %.6f\n", nT);
-  } else if (result == -1) {
-    printf("Failed: singular Jacobian\n");
-  } else {
-    printf("Failed: did not converge\n");
+
+    tla_arena_destroy(&scratch);
   }
 
-  tla_arena_destroy(&scratch);
+  //===================================
+  // Test 2: Adiabatic flame temperature
+  //===================================
+  printf("\n=== Adiabatic Flame Temperature ===\n\n");
+  {
+    double T_feed = 298.15;
+    double T_guess = 2000.0;
+
+    tla_Arena scratch = tla_arena_create(4 * 1024 * 1024);
+
+    AdiabaticResult res =
+        solve_adiabatic(T_feed, T_guess, feed_norm, total_atoms, N, C, A,
+                        g_db.components, &scratch);
+
+    if (res.status == 0) {
+      printf("Converged in %d outer iterations\n", res.outer_iters);
+      printf("Adiabatic flame temperature: %.1f K\n\n", res.T_ad);
+
+      // Final equilibrium at T_ad for display
+      double n[MAX_COMPONENTS];
+      for (int i = 0; i < N; i++)
+        n[i] = 1.0 / N;
+      double nT = 1.0;
+      double lambda[5] = {1.0, 1.0, 1.0, 1.0, 1.0};
+      double nu = 1.0;
+      double gamma[MAX_COMPONENTS];
+      for (int i = 0; i < N; i++)
+        gamma[i] = 1.0;
+
+      gibbs_solve_nr(n, &nT, lambda, &nu, res.T_ad, gamma, total_atoms, N, C, A,
+                     g_db.components, &scratch);
+
+      printf("%-8s %12s %12s\n", "Species", "n_i", "x_i");
+      printf("--------------------------------------\n");
+      for (int i = 0; i < N; i++) {
+        if (n[i] > 1e-6)
+          printf("%-8s %12.6f %12.6f\n", g_db.components[i].name, n[i],
+                 n[i] / nT);
+      }
+      printf("\nTotal moles: %.6f\n", nT);
+
+      double gam = mixture_gamma(n, nT, N, res.T_ad, g_db.components);
+      printf("Heat capacity ratio (gamma): %.4f\n", gam);
+    } else if (res.status == -1) {
+      printf("Failed: inner solver failed at T = %.1f K (iter %d)\n", res.T_ad,
+             res.outer_iters);
+    } else {
+      printf(
+          "Failed: outer loop did not converge (T = %.1f K after %d iters)\n",
+          res.T_ad, res.outer_iters);
+    }
+
+    tla_arena_destroy(&scratch);
+  }
+
   tla_arena_destroy(&la);
   return 0;
 }
